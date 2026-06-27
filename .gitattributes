@@ -1,0 +1,4 @@
+# Treat Office documents as binary to avoid diff noise
+*.docx binary
+*.xlsx binary
+*.pptx binary

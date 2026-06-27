@@ -1,0 +1,118 @@
+name: Daily MOM File Creator
+
+on:
+  schedule:
+    # Run Monday–Friday at 01:00 UTC = 08:00 Vietnam time
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  create-mom-files:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Calculate sprint and create files
+        run: |
+          set -e
+
+          # ── Date math ──────────────────────────────────────────────
+          today=$(date +%Y-%m-%d)
+          anchor=2026-06-15
+          days=$(( ( $(date -d "$today" +%s) - $(date -d "$anchor" +%s) ) / 86400 ))
+
+          # Guard: if today is before anchor, use sprint 2
+          if [ "$days" -lt 0 ]; then
+            days=0
+          fi
+
+          idx=$(( days / 14 ))
+          N=$(( 2 + idx ))
+          day_in_sprint=$(( days - idx * 14 ))
+          dow=$(date -d "$today" +%u)   # 1=Mon … 5=Fri
+          dmy=$(date -d "$today" +%d%m%y)
+
+          echo "Sprint: $N | Day in sprint: $day_in_sprint | DOW: $dow | DDMMYY: $dmy"
+
+          # ── Step 1: Ensure sprint folder structure ─────────────────
+          mkdir -p "sprint_${N}/daily" "sprint_${N}/planning" "sprint_${N}/review_Retro"
+          echo "Ensured folders for sprint_${N}"
+
+          # ── Helper: find most recent file matching a pattern ───────
+          latest_file() {
+            find . -name "$1" | sort | tail -1
+          }
+
+          CREATED_FILES=""
+
+          # ── Step 2: SPRINT-START (Monday, day 0) ──────────────────
+          if [ "$dow" -eq 1 ] && [ "$day_in_sprint" -eq 0 ]; then
+            PLANNING_TARGET="sprint_${N}/planning/Meeting_minutes_SprintPlanning_${dmy}.docx"
+            if [ ! -f "$PLANNING_TARGET" ]; then
+              PLANNING_TPL=$(latest_file "Meeting_minutes_SprintPlanning_*.docx")
+              if [ -n "$PLANNING_TPL" ]; then
+                cp "$PLANNING_TPL" "$PLANNING_TARGET"
+                echo "CREATED: $PLANNING_TARGET (from $PLANNING_TPL)"
+                CREATED_FILES="$CREATED_FILES\n- $PLANNING_TARGET"
+              else
+                echo "WARNING: No planning template found"
+              fi
+            else
+              echo "SKIP (exists): $PLANNING_TARGET"
+            fi
+          fi
+
+          # ── Step 3: SPRINT-END (Friday, day 11) ───────────────────
+          if [ "$dow" -eq 5 ] && [ "$day_in_sprint" -eq 11 ]; then
+            RETRO_TARGET="sprint_${N}/review_Retro/Meeting_minutes_ReviewAndRetro_${dmy}.docx"
+            if [ ! -f "$RETRO_TARGET" ]; then
+              RETRO_TPL=$(latest_file "Meeting_minutes_ReviewAndRetro_*.docx")
+              if [ -n "$RETRO_TPL" ]; then
+                cp "$RETRO_TPL" "$RETRO_TARGET"
+                echo "CREATED: $RETRO_TARGET (from $RETRO_TPL)"
+                CREATED_FILES="$CREATED_FILES\n- $RETRO_TARGET"
+              else
+                echo "WARNING: No review/retro template found"
+              fi
+            else
+              echo "SKIP (exists): $RETRO_TARGET"
+            fi
+          fi
+
+          # ── Step 4: DAILY (every run) ─────────────────────────────
+          DAILY_TARGET="sprint_${N}/daily/Meeting_minutes_DailyMeeting_${dmy}.docx"
+          if [ ! -f "$DAILY_TARGET" ]; then
+            # Prefer template from current sprint, fallback to any sprint
+            DAILY_TPL=$(find "sprint_${N}/daily" -name "Meeting_minutes_DailyMeeting_*.docx" | sort | tail -1)
+            if [ -z "$DAILY_TPL" ]; then
+              DAILY_TPL=$(latest_file "Meeting_minutes_DailyMeeting_*.docx")
+            fi
+            if [ -n "$DAILY_TPL" ]; then
+              cp "$DAILY_TPL" "$DAILY_TARGET"
+              echo "CREATED: $DAILY_TARGET (from $DAILY_TPL)"
+              CREATED_FILES="$CREATED_FILES\n- $DAILY_TARGET"
+            else
+              echo "WARNING: No daily template found"
+            fi
+          else
+            echo "SKIP (exists): $DAILY_TARGET"
+          fi
+
+          # ── Commit if anything was created ────────────────────────
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — all files already exist."
+          else
+            git commit -m "chore: auto-create MOM files for ${today} (Sprint ${N})"
+            git push
+            echo "Pushed new files to repository."
+          fi
+
